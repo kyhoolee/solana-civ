@@ -1,21 +1,36 @@
-use crate::errors::GameError;
-use crate::state::Player;
 use anchor_lang::prelude::*;
 use anchor_spl::{
     associated_token::AssociatedToken,
-    metadata::{create_metadata_accounts_v3, CreateMetadataAccountsV3, Metadata},
+    metadata::{create_metadata_accounts_v3, mpl_token_metadata::types::DataV2, CreateMetadataAccountsV3},
     token::{mint_to, Mint, MintTo, Token, TokenAccount},
 };
-use mpl_token_metadata::{pda::find_metadata_account, state::DataV2};
+// use mpl_token_metadata::id as mpl_token_metadata_id; // Updated import
+// use mpl_token_metadata::state::DataV2; // Updated for compatibility with the latest version
+// use mpl_token_metadata::{pda::find_metadata_account, types::DataV2};
+use crate::errors::GameError;
+use crate::state::Player;
+use anchor_spl::metadata::Metadata;
 
 pub fn mint_gems(ctx: Context<MintGems>) -> Result<()> {
-    if ctx.accounts.player_account.resources.gems == 0 {
+    // Ensure the player has gems
+    let gems = ctx.accounts.player_account.resources.gems as u64;
+    if gems == 0 {
         return err!(GameError::NotEnoughGems);
     }
-    let seeds = &["mint".as_bytes(), &[*ctx.bumps.get("mint").unwrap()]];
-    let signer = [&seeds[..]];
-    let amount = ctx.accounts.player_account.resources.gems as u64 * 1_000_000_000;
+
+    // Calculate mint amount safely
+    let amount = gems
+        .checked_mul(1_000_000_000)
+        .ok_or(GameError::CalculationOverflow)?;
+
+    // Reset gems in player account
     ctx.accounts.player_account.resources.gems = 0;
+
+    // PDA signer seeds
+    let seeds = &[b"mint".as_ref(), &[ctx.bumps.mint]];
+    let signer = [&seeds[..]];
+
+    // Mint tokens to the destination account
     mint_to(
         CpiContext::new_with_signer(
             ctx.accounts.token_program.to_account_info(),
@@ -41,40 +56,59 @@ pub fn create_gems(
     msg!("Creating metadata account");
 
     // PDA signer seeds
-    let signer_seeds: &[&[&[u8]]] = &[&[b"mint", &[*ctx.bumps.get("mint_account").unwrap()]]];
+    let seeds = &[b"mint".as_ref(), &[ctx.bumps.mint_account]];
+    let signer_seeds = &[&seeds[..]];
 
-    // Cross Program Invocation (CPI) signed by PDA
-    // Invoking the create_metadata_account_v3 instruction on the token metadata program
+    // Calculate the metadata account PDA
+    let metadata_pda = Pubkey::find_program_address(
+        &[
+            b"metadata",
+            mpl_token_metadata::ID.as_ref(),
+            ctx.accounts.mint_account.key().as_ref(),
+        ],
+        &mpl_token_metadata::ID, //mpl_token_metadata_id(),
+    )
+    .0;
+
+    // Verify the metadata account address
+    if ctx.accounts.metadata_account.key() != metadata_pda {
+        return err!(GameError::InvalidMetadataAccount);
+    }
+
+    let data_v2 = DataV2 {
+        name: token_name,
+        symbol: token_symbol,
+        uri: token_uri,
+        seller_fee_basis_points: 0,
+        creators: None,
+        collection: None,
+        uses: None,
+    };
+
+    // CPI Context
+    let cpi_ctx = CpiContext::new(
+        ctx.accounts.token_metadata_program.to_account_info(),
+        CreateMetadataAccountsV3 {
+            metadata: ctx.accounts.metadata_account.to_account_info(),
+            mint: ctx.accounts.mint_account.to_account_info(),
+            mint_authority: ctx.accounts.mint_account.to_account_info(),
+            update_authority: ctx.accounts.mint_account.to_account_info(),
+            payer: ctx.accounts.payer.to_account_info(),
+            system_program: ctx.accounts.system_program.to_account_info(),
+            rent: ctx.accounts.rent.to_account_info(),
+        }
+    ).with_signer(signer_seeds);
+
+    // Create the metadata account
     create_metadata_accounts_v3(
-        CpiContext::new(
-            ctx.accounts.token_metadata_program.to_account_info(),
-            CreateMetadataAccountsV3 {
-                metadata: ctx.accounts.metadata_account.to_account_info(),
-                mint: ctx.accounts.mint_account.to_account_info(),
-                mint_authority: ctx.accounts.mint_account.to_account_info(), // PDA is mint authority
-                update_authority: ctx.accounts.mint_account.to_account_info(), // PDA is update authority
-                payer: ctx.accounts.payer.to_account_info(),
-                system_program: ctx.accounts.system_program.to_account_info(),
-                rent: ctx.accounts.rent.to_account_info(),
-            },
-        )
-        .with_signer(signer_seeds),
-        DataV2 {
-            name: token_name,
-            symbol: token_symbol,
-            uri: token_uri,
-            seller_fee_basis_points: 0,
-            creators: None,
-            collection: None,
-            uses: None,
-        },
+        cpi_ctx,
+        data_v2,
         false, // Is mutable
         true,  // Update authority is signer
         None,  // Collection details
     )?;
 
     msg!("Token created successfully.");
-
     Ok(())
 }
 
@@ -83,8 +117,6 @@ pub struct CreateGems<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
 
-    // Create mint account
-    // Same PDA as address of the account and mint/freeze authority
     #[account(
         init,
         seeds = [b"mint"],
@@ -93,15 +125,11 @@ pub struct CreateGems<'info> {
         mint::decimals = 9,
         mint::authority = mint_account.key(),
         mint::freeze_authority = mint_account.key(),
-
     )]
     pub mint_account: Account<'info, Mint>,
 
-    /// CHECK: Address validated using constraint
-    #[account(
-        mut,
-        address=find_metadata_account(&mint_account.key()).0
-    )]
+    /// CHECK: Verified using PDA logic
+    #[account(mut)]
     pub metadata_account: UncheckedAccount<'info>,
 
     pub token_program: Program<'info, Token>,
@@ -119,6 +147,7 @@ pub struct MintGems<'info> {
         mint::authority = mint,
     )]
     pub mint: Account<'info, Mint>,
+
     #[account(
         init_if_needed,
         payer = player,
@@ -126,13 +155,16 @@ pub struct MintGems<'info> {
         associated_token::authority = owner,
     )]
     pub destination: Account<'info, TokenAccount>,
-    /// CHECK: this can be any personal address of the player
-    /// it's important to check the signer, while recipient of gems can be any address
+
+    /// CHECK: Verified off-chain
     pub owner: AccountInfo<'info>,
+
     #[account(mut, has_one = player)]
     pub player_account: Account<'info, Player>,
+
     #[account(mut)]
     pub player: Signer<'info>,
+
     pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
     pub token_program: Program<'info, Token>,

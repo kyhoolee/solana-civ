@@ -132,6 +132,10 @@ pub enum ResearchError {
 
 #[error_code]
 pub enum GameError {
-    #[msg("Not enough gems")]
+    #[msg("Player does not have enough gems.")]
     NotEnoughGems,
+    #[msg("Overflow occurred during calculation.")]
+    CalculationOverflow,
+    #[msg("Invalid metadata account address.")]
+    InvalidMetadataAccount,
 }

@@ -4,16 +4,12 @@
 seeds = false
 skip-lint = false
 
-[programs.localnet] # Match the cluster where you're deploying
+[programs.devnet] # Match the cluster where you're deploying
 solciv = "Fhs1N6Mp1DcKEQXuoPkWfBz636Mq5BBRPY9epNNWKi7j"
 mpl_token_metadata = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"
 
-[[test.genesis]]
-address = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"  
-program = "tests/metaplex_token_metadata_program.so"
-
 [provider]
-cluster = "Localnet" # Ensure this matches the target cluster
+cluster = "Devnet" # Ensure this matches the target cluster
 wallet = "/home/infcapital/work/projects/1_solana/0_foundation/config/mintAuthority.json"
 
 [registry]
@@ -21,4 +17,3 @@ url = "https://api.apr.dev"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
-
